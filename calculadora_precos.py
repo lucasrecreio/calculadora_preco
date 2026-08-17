@@ -357,7 +357,7 @@ with tab_deal:
                         MAX(PERC_ST) as PERC_ST, 
                         MAX(PVENDAST) as PVENDAST, 
                         MAX(COALESCE(QTD_CX, 1)) as QTD_CX
-                    FROM df_base
+                    FROM _df_base
                     WHERE CAST(CODPROD AS VARCHAR) IN ({codigos_str})
                     GROUP BY CODPROD
                 """
@@ -492,14 +492,15 @@ with tab_deal:
         fat_sem_st = fat_total - df_carrinho['ST'].sum()
         margem_ponderada = (lucro_total / fat_sem_st) * 100 if fat_sem_st > 0 else 0
         
-        cr1, cr2, cr3 = st.columns(3)
+        cr1, cr2, cr3, cr4 = st.columns(4)
         cr1.metric("Faturamento do Pedido", f"R$ {fat_total:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        cr2.metric("Lucro Líquido Final (Após Dedução)", f"R$ {lucro_total:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        cr2.metric("VPC / Dedução Global", f"- R$ {vpc_negociacao:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        cr3.metric("Lucro Líquido Final", f"R$ {lucro_total:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
         
         if margem_ponderada >= 5.0:
-            cr3.metric("Margem Ponderada Target", f"{margem_ponderada:.2f}%", "Saudável ✅", delta_color="normal")
+            cr4.metric("Margem Ponderada Target", f"{margem_ponderada:.2f}%", "Saudável ✅", delta_color="normal")
         else:
-            cr3.metric("Margem Ponderada Target", f"{margem_ponderada:.2f}%", "Abaixo do Alvo ❌", delta_color="inverse")
+            cr4.metric("Margem Ponderada Target", f"{margem_ponderada:.2f}%", "Abaixo do Alvo ❌", delta_color="inverse")
             
         st.dataframe(
             df_carrinho[['Código', 'Produto', 'Caixas', 'Preço Unit.', 'Preço Sem ST', 'Faturamento Total', 'Custo Total (CMV + Desp)', 'Lucro Líquido', 'Margem %']].style.format({
@@ -513,6 +514,9 @@ with tab_deal:
             use_container_width=True,
             hide_index=True
         )
+        
+        df_carrinho_export = df_carrinho.copy()
+        df_carrinho_export['VPC Global'] = 0.0 # Zero para os itens individuais, apenas consolidado no total
         
         totais = pd.DataFrame([{
             'Código': 'TOTAL',
@@ -533,12 +537,22 @@ with tab_deal:
             'Comissão': df_carrinho['Comissão'].sum(),
             'Outros': df_carrinho['Outros'].sum(),           
             'Custo Total (CMV + Desp)': df_carrinho['Custo Total (CMV + Desp)'].sum(),
+            'VPC Global': vpc_negociacao,
             'Lucro Líquido': lucro_total,
             'Margem %': margem_ponderada / 100.0,
             'Tipo Preço': '-'
         }])
         
-        df_detalhado = pd.concat([df_carrinho, totais], ignore_index=True)
+        df_detalhado = pd.concat([df_carrinho_export, totais], ignore_index=True)
+        
+        cols_order = [
+            'Código', 'Produto', 'Caixas', 'Unid/CX', 'Total Unid', 'Preço Unit.', 'Preço Sem ST', 
+            'Faturamento Total', 'Custo de Aquisição', 'ICMS', 'PIS/COFINS', 'FOT', 'ST', 
+            'Descarga', 'Op. Logístico', 'Comissão', 'Outros', 'Custo Total (CMV + Desp)', 
+            'VPC Global', 'Lucro Líquido', 'Margem %', 'Tipo Preço'
+        ]
+        df_detalhado = df_detalhado[cols_order]
+        
         df_cliente = df_detalhado[['Código', 'Produto', 'Caixas', 'Unid/CX', 'Total Unid', 'Preço Unit.', 'Preço Sem ST', 'Faturamento Total']].copy()
         
         def formatar_excel(df_alvo, nome_planilha):
