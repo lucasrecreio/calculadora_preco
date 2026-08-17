@@ -19,7 +19,7 @@ st.markdown(
 
 # --- CAMINHOS DOS ARQUIVOS ---
 # Teste local:
-caminho_base = r"\\192.168.254.230\Banco_Imagens\Projeto_Marketplace_MARTINS\Painel_Pricing_8098\Dados_Cadastro\8125_dados_cadastro_produto.csv"
+caminho_base = r"8125_dados_cadastro_produto.csv"
 
 # --- FUNÇÕES DE CARREGAMENTO (Tratamento de CSV Brasileiro Blindado) ---
 @st.cache_data(show_spinner=False)
