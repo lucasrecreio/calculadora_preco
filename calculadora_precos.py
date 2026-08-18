@@ -6,7 +6,7 @@ import io
 import re
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Mega Rio | Deal Desk", layout="wide", page_icon="📊")
+st.set_page_config(page_title="Recreio Rio | Simulador de Negociação", layout="wide", page_icon="📊")
 
 st.markdown(
     '<style>'
@@ -110,7 +110,7 @@ def listar_produtos_dropdown(df_in, marca=None):
 
 
 # --- INTERFACE PRINCIPAL ---
-st.title("🧮 Deal Desk | Simulador de Negociações")
+st.title("🧮 Simulador de Negociações")
 st.markdown("Avalie a rentabilidade dos produtos e simule o impacto de descontos, impostos e verbas comerciais (VPC) no pedido final.")
 
 tab_deal, tab_waterfall = st.tabs([
