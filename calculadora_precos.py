@@ -3,10 +3,10 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import io
-import duckdb
+import re
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Recreio Rio | Simulador de Negociações", layout="wide", page_icon="📊")
+st.set_page_config(page_title="Mega Rio | Deal Desk", layout="wide", page_icon="📊")
 
 st.markdown(
     '<style>'
@@ -18,29 +18,36 @@ st.markdown(
 )
 
 # --- CAMINHOS DOS ARQUIVOS ---
-# Teste local:
+# Teste local (para a nuvem, você pode mudar para "dados/8125_dados_cadastro_produto.csv" se colocar numa pasta)
 caminho_base = r"8125_dados_cadastro_produto.csv"
 
-# --- FUNÇÕES DE CARREGAMENTO (Tratamento de CSV Brasileiro Blindado) ---
+# --- FUNÇÕES AUXILIARES ---
+def parse_lista_codigos(texto_input):
+    if not texto_input: return []
+    return [x.strip() for x in re.split(r'[,\n]+', str(texto_input)) if x.strip()]
+
+# --- FUNÇÕES DE CARREGAMENTO E DADOS (Pandas Nativo) ---
 @st.cache_data(show_spinner=False)
 def carregar_base_produtos(caminho):
     try:
-        # Tenta ler com encoding UTF-8
+        # Forçamos a leitura do EAN como string para evitar notação científica ou arredondamento
         try:
-            df = pd.read_csv(caminho, sep=';', decimal=',', encoding='utf-8', low_memory=False, dtype={'CODPROD': str})
+            df = pd.read_csv(caminho, sep=';', decimal=',', encoding='utf-8', low_memory=False, dtype={'CODPROD': str, 'EAN': str})
             if len(df.columns) == 1: 
-                df = pd.read_csv(caminho, sep='\t', decimal=',', encoding='utf-8', low_memory=False, dtype={'CODPROD': str})
+                df = pd.read_csv(caminho, sep='\t', decimal=',', encoding='utf-8', low_memory=False, dtype={'CODPROD': str, 'EAN': str})
         except UnicodeDecodeError:
-            # Fallback para Latin1 (padrão Brasil/Windows)
-            df = pd.read_csv(caminho, sep=';', decimal=',', encoding='latin1', low_memory=False, dtype={'CODPROD': str})
+            df = pd.read_csv(caminho, sep=';', decimal=',', encoding='latin1', low_memory=False, dtype={'CODPROD': str, 'EAN': str})
             if len(df.columns) == 1:
-                df = pd.read_csv(caminho, sep='\t', decimal=',', encoding='latin1', low_memory=False, dtype={'CODPROD': str})
+                df = pd.read_csv(caminho, sep='\t', decimal=',', encoding='latin1', low_memory=False, dtype={'CODPROD': str, 'EAN': str})
             
-        # Tratamento do código do produto (remover .0 indesejados)
         if 'CODPROD' in df.columns:
             df['CODPROD'] = df['CODPROD'].astype(str).str.split('.').str[0]
             
-        # Lista de colunas numéricas que precisamos garantir que são floats
+        # BLINDAGEM DO EAN (Mantém estritamente como texto e remove '.0' final)
+        if 'EAN' in df.columns:
+            df['EAN'] = df['EAN'].astype(str).str.replace(r'\.0$', '', regex=True)
+            df['EAN'] = df['EAN'].replace(['nan', 'NaN', 'None', ''], '-')
+            
         cols_numericas = ['CUSTO_ULT_ENT', 'PERC_ICMS', 'PERCPIS', 'PERCCOFINS', 'PVENDAST', 'PERC_ST', 'QTD_CX', 'QTESTDISP']
         
         for col in cols_numericas:
@@ -53,59 +60,57 @@ def carregar_base_produtos(caminho):
     except Exception as e:
         return pd.DataFrame()
 
-# Carrega a base apenas uma vez na memória
+# Carrega a base
 df_base = carregar_base_produtos(caminho_base)
 
 if df_base.empty or len(df_base.columns) == 0:
     st.error(f"⚠️ Não foi possível ler a base de produtos. Verifique se o caminho do arquivo está correto: `{caminho_base}`")
     st.stop()
 
-# --- FUNÇÕES DE BUSCA NO DUCKDB ---
+# --- FUNÇÕES DE BUSCA ---
 @st.cache_data(show_spinner=False)
-def buscar_produto(codigo, _df_base):
-    query = f"""
-        SELECT 
-            MAX(PRODUTO) as DESCRICAO, 
-            MAX(CUSTO_ULT_ENT) as CUSTO_ULT_ENT, 
-            MAX(PERC_ICMS) as PERC_ICMS, 
-            MAX(PERCPIS) as PERCPIS, 
-            MAX(PERCCOFINS) as PERCCOFINS, 
-            MAX(PERC_ST) as PERC_ST, 
-            MAX(PVENDAST) as PVENDAST, 
-            MAX(COALESCE(QTD_CX, 1)) as QTD_CX,
-            MAX(QTESTDISP) as ESTOQUE_CX
-        FROM _df_base
-        WHERE CAST(CODPROD AS VARCHAR) = '{codigo}'
-    """
-    return duckdb.query(query).df()
+def buscar_produto(codigo, df_in):
+    res = df_in[df_in['CODPROD'] == codigo].copy()
+    if not res.empty:
+        agg_res = {
+            'DESCRICAO': res['PRODUTO'].max(),
+            'MARCA': res['MARCA'].max() if 'MARCA' in res.columns else "-",
+            'EAN': res['EAN'].max() if 'EAN' in res.columns else "-",
+            'CUSTO_ULT_ENT': res['CUSTO_ULT_ENT'].max(),
+            'PERC_ICMS': res['PERC_ICMS'].max(),
+            'PERCPIS': res['PERCPIS'].max(),
+            'PERCCOFINS': res['PERCCOFINS'].max(),
+            'PERC_ST': res['PERC_ST'].max(),
+            'PVENDAST': res['PVENDAST'].max(),
+            'QTD_CX': res['QTD_CX'].max() if pd.notna(res['QTD_CX'].max()) and res['QTD_CX'].max() > 0 else 1,
+            'ESTOQUE_CX': res['QTESTDISP'].max()
+        }
+        return pd.DataFrame([agg_res])
+    return pd.DataFrame()
 
 @st.cache_data(show_spinner=False)
-def listar_marcas(_df_base):
-    if 'MARCA' not in _df_base.columns:
+def listar_marcas(df_in):
+    if 'MARCA' not in df_in.columns:
         return []
-    query = "SELECT DISTINCT MARCA FROM _df_base WHERE MARCA IS NOT NULL AND MARCA != '' ORDER BY MARCA"
-    df = duckdb.query(query).df()
-    return df['MARCA'].tolist()
+    marcas = df_in['MARCA'].dropna().unique().tolist()
+    return sorted([str(m) for m in marcas if str(m).strip() != ''])
     
 @st.cache_data(show_spinner=False)
-def listar_produtos_dropdown(_df_base, marca=None):
-    cond_marca = ""
-    if marca and 'MARCA' in _df_base.columns:
-        marca_segura = marca.replace("'", "''")
-        cond_marca = f"AND MARCA = '{marca_segura}'"
+def listar_produtos_dropdown(df_in, marca=None):
+    df_filt = df_in.dropna(subset=['PRODUTO']).copy()
+    df_filt = df_filt[df_filt['PRODUTO'].str.strip() != '']
+    
+    if marca:
+        df_filt = df_filt[df_filt['MARCA'] == marca]
         
-    query = f"""
-        SELECT DISTINCT CAST(CODPROD AS VARCHAR) AS CODPROD, PRODUTO as DESCRICAO 
-        FROM _df_base 
-        WHERE PRODUTO IS NOT NULL AND PRODUTO != '' {cond_marca}
-        ORDER BY TRY_CAST(CODPROD AS INTEGER)
-    """
-    df = duckdb.query(query).df()
-    return (df['CODPROD'] + " - " + df['DESCRICAO']).tolist()
+    df_filt['COD_NUM'] = pd.to_numeric(df_filt['CODPROD'], errors='coerce')
+    df_filt = df_filt.sort_values('COD_NUM')
+    
+    return (df_filt['CODPROD'].astype(str) + " - " + df_filt['PRODUTO']).tolist()
 
 
 # --- INTERFACE PRINCIPAL ---
-st.title("🧮 Simulador de Negociações")
+st.title("🧮 Deal Desk | Simulador de Negociações")
 st.markdown("Avalie a rentabilidade dos produtos e simule o impacto de descontos, impostos e verbas comerciais (VPC) no pedido final.")
 
 tab_deal, tab_waterfall = st.tabs([
@@ -154,6 +159,8 @@ with tab_deal:
                 
                 if not df_prod.empty and pd.notna(df_prod['DESCRICAO'].iloc[0]):
                     p_desc = df_prod['DESCRICAO'].iloc[0]
+                    p_marca = df_prod['MARCA'].iloc[0]
+                    p_ean = df_prod['EAN'].iloc[0]
                     p_custo = float(df_prod['CUSTO_ULT_ENT'].iloc[0] or 0.0)
                     p_icms = float(df_prod['PERC_ICMS'].iloc[0] or 0.0)
                     p_pis = float(df_prod['PERCPIS'].iloc[0] or 0.0)
@@ -163,16 +170,18 @@ with tab_deal:
                     p_qtd_cx = int(df_prod['QTD_CX'].iloc[0] or 1)
                     p_estoque = int(df_prod['ESTOQUE_CX'].iloc[0] or 0)
                     
-                    preco_sem_st_erp = p_preco_atual / (1 + (p_st / 100))
+                    preco_sem_st_erp = p_preco_atual / (1 + (p_st / 100)) if (1 + (p_st / 100)) > 0 else p_preco_atual
                     
                     st.markdown(f"""
                     <div style="background-color: #2b303b; border-left: 5px solid #00cc96; padding: 15px; border-radius: 5px; color: #ffffff; margin-bottom: 20px;">
                         <h4 style="margin: 0 0 10px 0; color: #ffffff;">{p_desc}</h4>
                         <span style="font-size: 14px;">
-                            <b>Custo de Aquisição:</b> R$ {p_custo:.2f} &nbsp;|&nbsp; 
-                            <b>Preço Tabela (Com ST):</b> R$ {p_preco_atual:.2f} &nbsp;|&nbsp; 
-                            <b>Preço Tabela (Sem ST):</b> R$ {preco_sem_st_erp:.2f} &nbsp;|&nbsp; 
-                            <b>Unidades por Caixa:</b> {p_qtd_cx} &nbsp;|&nbsp; 
+                            <b>Marca:</b> {p_marca} &nbsp;|&nbsp;
+                            <b>EAN:</b> {p_ean} &nbsp;|&nbsp;
+                            <b>Custo Base:</b> R$ {p_custo:.2f} &nbsp;|&nbsp; 
+                            <b>Preço ERP (Com ST):</b> R$ {p_preco_atual:.2f} &nbsp;|&nbsp; 
+                            <b>Preço ERP (Sem ST):</b> R$ {preco_sem_st_erp:.2f} <br>
+                            <b>Unidades p/ Caixa:</b> {p_qtd_cx} &nbsp;|&nbsp; 
                             <b>Estoque Disp.:</b> {p_estoque} Cx
                         </span>
                     </div>
@@ -273,6 +282,8 @@ with tab_deal:
                         novo_item = {
                             "Código": cod_prod_sim,
                             "Produto": p_desc,
+                            "Marca": p_marca,
+                            "EAN": p_ean,
                             "Caixas": qtd_caixas,
                             "Unid/CX": p_qtd_cx,
                             "Total Unid": total_unidades,
@@ -325,17 +336,48 @@ with tab_deal:
 
     # === ABA INTERNA 2: UPLOAD EM LOTE ===
     with tab_lote:
-        st.info("💡 **Dica:** Preencha a planilha modelo com os SKUs. Se você deixar os campos de despesas vazios, o sistema usará o padrão (Ex: Op. Logístico 5%).")
+        st.info("💡 **Dica:** Filtre as Marcas, Nomes e Códigos abaixo para gerar uma Planilha Modelo já pré-preenchida com os produtos. Se deixar os campos de despesas vazios no preenchimento, o sistema usará o padrão (Ex: Op. Logístico 5%).")
         
-        df_modelo = pd.DataFrame(columns=['CODPROD', 'QTD_CAIXAS', 'PRECO_NEGOCIADO', 'MARGEM_ALVO_PCT', 'DESCARGA_PCT', 'OP_LOGISTICO_PCT', 'COMISSAO_PCT', 'OUTROS_PCT'])
-        buffer_modelo = io.BytesIO()
-        with pd.ExcelWriter(buffer_modelo, engine='openpyxl') as writer:
-            df_modelo.to_excel(writer, index=False, sheet_name='Lote')
+        col_fl1, col_fl2, col_fl3 = st.columns([1, 1, 1])
+        with col_fl1:
+            marcas_lote = st.multiselect("Filtrar por Marcas:", listar_marcas(df_base), placeholder="Selecione as marcas...")
+        with col_fl2:
+            nome_lote = st.text_input("Filtrar por Nome do Produto:", "", placeholder="Ex: azeite")
+        with col_fl3:
+            codigos_texto = st.text_area("Filtrar por Códigos (separados por vírgula):", help="Ex: 1768, 12900", height=68, placeholder="Cole a lista de códigos aqui...")
         
-        c1_lote, c2_lote = st.columns([1, 2])
-        with c1_lote:
-            st.download_button("📥 Baixar Planilha Modelo", data=buffer_modelo.getvalue(), file_name="Modelo_Upload_Pricing.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        codigos_lista = parse_lista_codigos(codigos_texto)
         
+        df_modelo_base = df_base.copy()
+        
+        if marcas_lote:
+            df_modelo_base = df_modelo_base[df_modelo_base['MARCA'].isin(marcas_lote)]
+        if nome_lote:
+            df_modelo_base = df_modelo_base[df_modelo_base['PRODUTO'].str.contains(nome_lote, case=False, na=False)]
+        if codigos_lista:
+            df_modelo_base = df_modelo_base[df_modelo_base['CODPROD'].isin(codigos_lista)]
+            
+        df_modelo_base['COD_NUM'] = pd.to_numeric(df_modelo_base['CODPROD'], errors='coerce')
+        df_modelo_base = df_modelo_base.sort_values('COD_NUM')
+
+        with st.spinner("Preparando template..."):
+            df_produtos_modelo = df_modelo_base[['CODPROD', 'PRODUTO', 'MARCA', 'EAN', 'QTESTDISP']].rename(columns={'QTESTDISP': 'ESTOQUE_CX'}).copy()
+            
+            df_produtos_modelo['QTD_CAIXAS'] = None
+            df_produtos_modelo['PRECO_NEGOCIADO'] = None
+            df_produtos_modelo['MARGEM_ALVO_PCT'] = None
+            df_produtos_modelo['DESCARGA_PCT'] = None
+            df_produtos_modelo['OP_LOGISTICO_PCT'] = None
+            df_produtos_modelo['COMISSAO_PCT'] = None
+            df_produtos_modelo['OUTROS_PCT'] = None
+            
+            buffer_modelo = io.BytesIO()
+            with pd.ExcelWriter(buffer_modelo, engine='openpyxl') as writer:
+                df_produtos_modelo.to_excel(writer, index=False, sheet_name='Lote')
+                
+        st.download_button("📥 Baixar Planilha Modelo (Preenchida com Filtros)", data=buffer_modelo.getvalue(), file_name="Modelo_Upload_Pricing.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        
+        st.markdown("---")
         arquivo_lote = st.file_uploader("Suba a planilha preenchida (Excel):", type=['xlsx'])
         
         if arquivo_lote:
@@ -343,25 +385,23 @@ with tab_deal:
                 df_upload = pd.read_excel(arquivo_lote)
                 df_upload['CODPROD'] = df_upload['CODPROD'].astype(str).str.split('.').str[0]
                 
-                codigos_lista = df_upload['CODPROD'].dropna().tolist()
-                codigos_str = "'" + "','".join(codigos_lista) + "'"
+                codigos_lista_up = df_upload['CODPROD'].dropna().tolist()
                 
-                query_lote = f"""
-                    SELECT 
-                        CAST(CODPROD AS VARCHAR) AS CODPROD,
-                        MAX(PRODUTO) as DESCRICAO, 
-                        MAX(CUSTO_ULT_ENT) as CUSTO_ULT_ENT, 
-                        MAX(PERC_ICMS) as PERC_ICMS, 
-                        MAX(PERCPIS) as PERCPIS, 
-                        MAX(PERCCOFINS) as PERCCOFINS, 
-                        MAX(PERC_ST) as PERC_ST, 
-                        MAX(PVENDAST) as PVENDAST, 
-                        MAX(COALESCE(QTD_CX, 1)) as QTD_CX
-                    FROM _df_base
-                    WHERE CAST(CODPROD AS VARCHAR) IN ({codigos_str})
-                    GROUP BY CODPROD
-                """
-                df_db_lote = duckdb.query(query_lote).df()
+                df_db_lote = df_base[df_base['CODPROD'].isin(codigos_lista_up)].copy()
+                df_db_lote = df_db_lote.groupby('CODPROD').agg({
+                    'PRODUTO': 'max',
+                    'MARCA': 'max',
+                    'EAN': 'max',
+                    'CUSTO_ULT_ENT': 'max',
+                    'PERC_ICMS': 'max',
+                    'PERCPIS': 'max',
+                    'PERCCOFINS': 'max',
+                    'PERC_ST': 'max',
+                    'PVENDAST': 'max',
+                    'QTD_CX': 'max'
+                }).reset_index()
+                
+                df_db_lote['QTD_CX'] = df_db_lote['QTD_CX'].replace(0, 1).fillna(1)
                 
                 itens_adicionados = 0 ; itens_atualizados = 0
                 
@@ -381,10 +421,17 @@ with tab_deal:
                                 p_st = float(row_db['PERC_ST'].iloc[0] or 0.0)
                                 p_preco_atual = float(row_db['PVENDAST'].iloc[0] or 0.0)
                                 p_qtd_cx = int(row_db['QTD_CX'].iloc[0] or 1)
-                                p_desc = row_db['DESCRICAO'].iloc[0]
+                                p_desc = row_db['PRODUTO'].iloc[0]
+                                p_marca = row_db['MARCA'].iloc[0] if pd.notna(row_db['MARCA'].iloc[0]) else "-"
+                                p_ean = row_db['EAN'].iloc[0] if pd.notna(row_db['EAN'].iloc[0]) else "-"
                                 
-                                qtd_caixas = int(row.get('QTD_CAIXAS', 0))
-                                if pd.isna(qtd_caixas) or qtd_caixas <= 0: continue
+                                qtd_raw = row.get('QTD_CAIXAS', 0)
+                                if pd.isna(qtd_raw) or str(qtd_raw).strip() == "": continue
+                                try:
+                                    qtd_caixas = int(float(qtd_raw))
+                                    if qtd_caixas <= 0: continue
+                                except:
+                                    continue
                                 
                                 margem_alvo_lote = row.get('MARGEM_ALVO_PCT', None)
                                 preco_negociado_lote = row.get('PRECO_NEGOCIADO', None)
@@ -446,7 +493,8 @@ with tab_deal:
                                 cmv_total = custo_aquisicao + (impostos_totais_sem_st * total_unidades) + (despesas_rs * total_unidades)
                                 
                                 novo_item_lote = {
-                                    "Código": cod, "Produto": p_desc, "Caixas": qtd_caixas, "Unid/CX": p_qtd_cx,
+                                    "Código": cod, "Produto": p_desc, "Marca": p_marca, "EAN": p_ean,
+                                    "Caixas": qtd_caixas, "Unid/CX": p_qtd_cx,
                                     "Total Unid": total_unidades, "Preço Unit.": preco_final_aplicado,
                                     "Preço Sem ST": preco_sem_st,
                                     "Faturamento Total": preco_final_aplicado * total_unidades, "Custo de Aquisição": custo_aquisicao,
@@ -503,7 +551,7 @@ with tab_deal:
             cr4.metric("Margem Ponderada Target", f"{margem_ponderada:.2f}%", "Abaixo do Alvo ❌", delta_color="inverse")
             
         st.dataframe(
-            df_carrinho[['Código', 'Produto', 'Caixas', 'Preço Unit.', 'Preço Sem ST', 'Faturamento Total', 'Custo Total (CMV + Desp)', 'Lucro Líquido', 'Margem %']].style.format({
+            df_carrinho[['Código', 'Produto', 'Marca', 'EAN', 'Caixas', 'Preço Unit.', 'Preço Sem ST', 'Faturamento Total', 'Custo Total (CMV + Desp)', 'Lucro Líquido', 'Margem %']].style.format({
                 "Preço Unit.": "R$ {:,.2f}",
                 "Preço Sem ST": "R$ {:,.2f}",
                 "Faturamento Total": "R$ {:,.2f}",
@@ -516,11 +564,13 @@ with tab_deal:
         )
         
         df_carrinho_export = df_carrinho.copy()
-        df_carrinho_export['VPC Global'] = 0.0 # Zero para os itens individuais, apenas consolidado no total
+        df_carrinho_export['VPC Global'] = 0.0
         
         totais = pd.DataFrame([{
             'Código': 'TOTAL',
             'Produto': f"{df_carrinho['Código'].nunique()} Itens",
+            'Marca': '-',
+            'EAN': '-',
             'Caixas': df_carrinho['Caixas'].sum(),
             'Unid/CX': '-',
             'Total Unid': df_carrinho['Total Unid'].sum(),
@@ -546,14 +596,14 @@ with tab_deal:
         df_detalhado = pd.concat([df_carrinho_export, totais], ignore_index=True)
         
         cols_order = [
-            'Código', 'Produto', 'Caixas', 'Unid/CX', 'Total Unid', 'Preço Unit.', 'Preço Sem ST', 
+            'Código', 'Produto', 'Marca', 'EAN', 'Caixas', 'Unid/CX', 'Total Unid', 'Preço Unit.', 'Preço Sem ST', 
             'Faturamento Total', 'Custo de Aquisição', 'ICMS', 'PIS/COFINS', 'FOT', 'ST', 
             'Descarga', 'Op. Logístico', 'Comissão', 'Outros', 'Custo Total (CMV + Desp)', 
             'VPC Global', 'Lucro Líquido', 'Margem %', 'Tipo Preço'
         ]
         df_detalhado = df_detalhado[cols_order]
         
-        df_cliente = df_detalhado[['Código', 'Produto', 'Caixas', 'Unid/CX', 'Total Unid', 'Preço Unit.', 'Preço Sem ST', 'Faturamento Total']].copy()
+        df_cliente = df_detalhado[['Código', 'Produto', 'Marca', 'EAN', 'Caixas', 'Unid/CX', 'Total Unid', 'Preço Unit.', 'Preço Sem ST', 'Faturamento Total']].copy()
         
         def formatar_excel(df_alvo, nome_planilha):
             buffer = io.BytesIO()
@@ -567,7 +617,13 @@ with tab_deal:
                 for row in range(2, len(df_alvo) + 2):
                     for col, nome_coluna in enumerate(df_alvo.columns, start=1):
                         celula = worksheet.cell(row=row, column=col)
-                        if isinstance(celula.value, (int, float)):
+                        
+                        if nome_coluna == 'EAN':
+                            celula.number_format = '@'
+                            if pd.notna(celula.value) and str(celula.value).strip() != '-':
+                                celula.value = str(celula.value).replace('.0', '').strip()
+                                
+                        elif isinstance(celula.value, (int, float)):
                             if 'Margem' in nome_coluna:
                                 celula.number_format = formato_percentual
                             elif nome_coluna not in ['Caixas', 'Unid/CX', 'Total Unid']:
@@ -630,7 +686,7 @@ with tab_waterfall:
         lista_produtos_filtrada_wf = lista_produtos_raw_wf
         
     with col_b_wf3:
-        produto_wf = st.selectbox("Selecione o Produto para Análise Gráfica:", lista_produtos_filtrada_wf, index=None, placeholder="Selecione um produto...", key="busca_wf")
+        produto_wf = st.selectbox("Selecione o Produto para Análise Gráfica:", lista_produtos_filtrada_wf, index=None, placeholder="Selecione um produto...", key="busca_wf_select")
 
     if produto_wf:
         cod_prod_wf = produto_wf.split(" - ")[0].strip()
@@ -648,7 +704,6 @@ with tab_waterfall:
                 p_preco_atual_wf = float(df_prod_wf['PVENDAST'].iloc[0] or 0.0)
                 p_estoque_wf = int(df_prod_wf['ESTOQUE_CX'].iloc[0] or 0)
                 
-                # Cálculo rápido do preço sem ST do ERP
                 preco_sem_st_erp = p_preco_atual_wf / (1 + (p_st_wf / 100))
                 
                 st.markdown(f"""
@@ -682,10 +737,10 @@ with tab_waterfall:
                         
                 with st.expander("⚙️ Ajustar Despesas Operacionais (%)", expanded=False):
                     cd_w1, cd_w2, cd_w3, cd_w4 = st.columns(4)
-                    pct_f_wf = cd_w1.number_input("Descarga (%)", value=0.0, step=0.5, key="fwf_wf")
-                    pct_fi_wf = cd_w2.number_input("Op. Logístico (%)", value=5.0, step=0.5, key="fiwf_wf")
-                    pct_c_wf = cd_w3.number_input("Comissão (%)", value=0.0, step=0.5, key="cwf_wf")
-                    pct_o_wf = cd_w4.number_input("Outros (%)", value=0.0, step=0.5, key="owf_wf")
+                    pct_f_wf = cd_w1.number_input("Descarga (%)", value=0.0, step=0.5, key="fwf_wf_2")
+                    pct_fi_wf = cd_w2.number_input("Op. Logístico (%)", value=5.0, step=0.5, key="fiwf_wf_2")
+                    pct_c_wf = cd_w3.number_input("Comissão (%)", value=0.0, step=0.5, key="cwf_wf_2")
+                    pct_o_wf = cd_w4.number_input("Outros (%)", value=0.0, step=0.5, key="owf_wf_2")
                 
                 aliq_icms_wf = p_icms_wf / 100.0
                 aliq_pis_cofins_wf = (p_pis_wf + p_cofins_wf) / 100.0
@@ -706,7 +761,6 @@ with tab_waterfall:
                 else:
                     preco_sem_st_wf = preco_base_wf / (1 + st_efetivo_wf)
                         
-                # Cálculos Unitários
                 vlr_icms_wf = preco_sem_st_wf * aliq_icms_wf
                 base_pis_cofins_wf = preco_sem_st_wf - vlr_icms_wf
                 vlr_pis_wf = base_pis_cofins_wf * (p_pis_wf / 100.0)
