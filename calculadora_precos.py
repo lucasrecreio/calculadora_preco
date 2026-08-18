@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import io
+import duckdb
 import re
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
@@ -284,6 +285,7 @@ with tab_deal:
                             "Produto": p_desc,
                             "Marca": p_marca,
                             "EAN": p_ean,
+                            "Estoque (Cx)": p_estoque,
                             "Caixas": qtd_caixas,
                             "Unid/CX": p_qtd_cx,
                             "Total Unid": total_unidades,
@@ -386,22 +388,28 @@ with tab_deal:
                 df_upload['CODPROD'] = df_upload['CODPROD'].astype(str).str.split('.').str[0]
                 
                 codigos_lista_up = df_upload['CODPROD'].dropna().tolist()
+                codigos_str_up = "'" + "','".join(codigos_lista_up) + "'"
                 
-                df_db_lote = df_base[df_base['CODPROD'].isin(codigos_lista_up)].copy()
-                df_db_lote = df_db_lote.groupby('CODPROD').agg({
-                    'PRODUTO': 'max',
-                    'MARCA': 'max',
-                    'EAN': 'max',
-                    'CUSTO_ULT_ENT': 'max',
-                    'PERC_ICMS': 'max',
-                    'PERCPIS': 'max',
-                    'PERCCOFINS': 'max',
-                    'PERC_ST': 'max',
-                    'PVENDAST': 'max',
-                    'QTD_CX': 'max'
-                }).reset_index()
-                
-                df_db_lote['QTD_CX'] = df_db_lote['QTD_CX'].replace(0, 1).fillna(1)
+                # Usando DuckDB com a tabela de cadastro
+                query_lote = f"""
+                    SELECT 
+                        CAST(CODPROD AS VARCHAR) AS CODPROD,
+                        MAX(PRODUTO) as DESCRICAO, 
+                        MAX(MARCA) as MARCA,
+                        MAX(EAN) as EAN,
+                        MAX(CUSTO_ULT_ENT) as CUSTO_ULT_ENT, 
+                        MAX(PERC_ICMS) as PERC_ICMS, 
+                        MAX(PERCPIS) as PERCPIS, 
+                        MAX(PERCCOFINS) as PERCCOFINS, 
+                        MAX(PERC_ST) as PERC_ST, 
+                        MAX(PVENDAST) as PVENDAST, 
+                        MAX(COALESCE(QTD_CX, 1)) as QTD_CX,
+                        MAX(QTESTDISP) as ESTOQUE_CX
+                    FROM df_base
+                    WHERE CAST(CODPROD AS VARCHAR) IN ({codigos_str_up})
+                    GROUP BY CODPROD
+                """
+                df_db_lote = duckdb.query(query_lote).df()
                 
                 itens_adicionados = 0 ; itens_atualizados = 0
                 
@@ -421,7 +429,8 @@ with tab_deal:
                                 p_st = float(row_db['PERC_ST'].iloc[0] or 0.0)
                                 p_preco_atual = float(row_db['PVENDAST'].iloc[0] or 0.0)
                                 p_qtd_cx = int(row_db['QTD_CX'].iloc[0] or 1)
-                                p_desc = row_db['PRODUTO'].iloc[0]
+                                p_estoque = int(row_db['ESTOQUE_CX'].iloc[0] or 0)
+                                p_desc = row_db['DESCRICAO'].iloc[0]
                                 p_marca = row_db['MARCA'].iloc[0] if pd.notna(row_db['MARCA'].iloc[0]) else "-"
                                 p_ean = row_db['EAN'].iloc[0] if pd.notna(row_db['EAN'].iloc[0]) else "-"
                                 
@@ -494,6 +503,7 @@ with tab_deal:
                                 
                                 novo_item_lote = {
                                     "Código": cod, "Produto": p_desc, "Marca": p_marca, "EAN": p_ean,
+                                    "Estoque (Cx)": p_estoque,
                                     "Caixas": qtd_caixas, "Unid/CX": p_qtd_cx,
                                     "Total Unid": total_unidades, "Preço Unit.": preco_final_aplicado,
                                     "Preço Sem ST": preco_sem_st,
@@ -551,7 +561,7 @@ with tab_deal:
             cr4.metric("Margem Ponderada Target", f"{margem_ponderada:.2f}%", "Abaixo do Alvo ❌", delta_color="inverse")
             
         st.dataframe(
-            df_carrinho[['Código', 'Produto', 'Marca', 'EAN', 'Caixas', 'Preço Unit.', 'Preço Sem ST', 'Faturamento Total', 'Custo Total (CMV + Desp)', 'Lucro Líquido', 'Margem %']].style.format({
+            df_carrinho[['Código', 'Produto', 'Marca', 'EAN', 'Estoque (Cx)', 'Caixas', 'Preço Unit.', 'Preço Sem ST', 'Faturamento Total', 'Custo Total (CMV + Desp)', 'Lucro Líquido', 'Margem %']].style.format({
                 "Preço Unit.": "R$ {:,.2f}",
                 "Preço Sem ST": "R$ {:,.2f}",
                 "Faturamento Total": "R$ {:,.2f}",
@@ -571,6 +581,7 @@ with tab_deal:
             'Produto': f"{df_carrinho['Código'].nunique()} Itens",
             'Marca': '-',
             'EAN': '-',
+            'Estoque (Cx)': '-',
             'Caixas': df_carrinho['Caixas'].sum(),
             'Unid/CX': '-',
             'Total Unid': df_carrinho['Total Unid'].sum(),
@@ -596,13 +607,14 @@ with tab_deal:
         df_detalhado = pd.concat([df_carrinho_export, totais], ignore_index=True)
         
         cols_order = [
-            'Código', 'Produto', 'Marca', 'EAN', 'Caixas', 'Unid/CX', 'Total Unid', 'Preço Unit.', 'Preço Sem ST', 
+            'Código', 'Produto', 'Marca', 'EAN', 'Estoque (Cx)', 'Caixas', 'Unid/CX', 'Total Unid', 'Preço Unit.', 'Preço Sem ST', 
             'Faturamento Total', 'Custo de Aquisição', 'ICMS', 'PIS/COFINS', 'FOT', 'ST', 
             'Descarga', 'Op. Logístico', 'Comissão', 'Outros', 'Custo Total (CMV + Desp)', 
             'VPC Global', 'Lucro Líquido', 'Margem %', 'Tipo Preço'
         ]
         df_detalhado = df_detalhado[cols_order]
         
+        # O cliente NÃO VÊ a coluna de Estoque
         df_cliente = df_detalhado[['Código', 'Produto', 'Marca', 'EAN', 'Caixas', 'Unid/CX', 'Total Unid', 'Preço Unit.', 'Preço Sem ST', 'Faturamento Total']].copy()
         
         def formatar_excel(df_alvo, nome_planilha):
@@ -626,7 +638,7 @@ with tab_deal:
                         elif isinstance(celula.value, (int, float)):
                             if 'Margem' in nome_coluna:
                                 celula.number_format = formato_percentual
-                            elif nome_coluna not in ['Caixas', 'Unid/CX', 'Total Unid']:
+                            elif nome_coluna not in ['Caixas', 'Unid/CX', 'Total Unid', 'Estoque (Cx)']:
                                 celula.number_format = formato_moeda
                                 
                 for column_cells in worksheet.columns:
@@ -761,6 +773,7 @@ with tab_waterfall:
                 else:
                     preco_sem_st_wf = preco_base_wf / (1 + st_efetivo_wf)
                         
+                # Cálculos Unitários
                 vlr_icms_wf = preco_sem_st_wf * aliq_icms_wf
                 base_pis_cofins_wf = preco_sem_st_wf - vlr_icms_wf
                 vlr_pis_wf = base_pis_cofins_wf * (p_pis_wf / 100.0)
