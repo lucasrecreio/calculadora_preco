@@ -345,13 +345,12 @@ with tab_deal:
 
     # === ABA INTERNA 2: UPLOAD EM LOTE ===
     with tab_lote:
-        st.info("💡 **Dica:** Filtre as Marcas, Nomes e Códigos abaixo para gerar uma Planilha Modelo já pré-preenchida com os produtos.")
+        st.info("💡 **Dica:** Filtre as Marcas, Nomes e Códigos abaixo para gerar uma Planilha Modelo já pré-preenchida com os produtos. Se deixar os campos de despesas vazios no preenchimento, o sistema usará o padrão (Ex: Op. Logístico 5%).")
 
-        col_fl1, col_fl2 = st.columns(2)
+        col_fl1, col_fl2, col_fl3 = st.columns([1, 1, 1])
         with col_fl1:
             marcas_lote = st.multiselect("Filtrar por Marcas:", listar_marcas(df_base), placeholder="Selecione as marcas...")
             
-            # Novo filtro de seleção múltipla (como solicitado)
             produtos_lista_dropdown = listar_produtos_dropdown(df_base)
             produtos_selecionados = st.multiselect("Selecionar Produtos Específicos:", produtos_lista_dropdown, placeholder="Busque e selecione produtos...")
             
@@ -361,7 +360,6 @@ with tab_deal:
 
         codigos_lista = parse_lista_codigos(codigos_texto)
         
-        # Junta os códigos textuais com os selecionados no multiselect
         if produtos_selecionados:
             cods_selecionados = [p.split(" - ")[0].strip() for p in produtos_selecionados]
             codigos_lista.extend(cods_selecionados)
@@ -406,7 +404,6 @@ with tab_deal:
                 codigos_lista_up = df_upload['CODPROD'].dropna().tolist()
                 codigos_str_up = "'" + "','".join(codigos_lista_up) + "'"
 
-                # Usando DuckDB com a tabela de cadastro
                 query_lote = f"""
                     SELECT 
                         CAST(CODPROD AS VARCHAR) AS CODPROD,
@@ -804,7 +801,7 @@ with tab_waterfall:
                 vlr_fot_wf = ((preco_sem_st_wf * 0.22) - vlr_icms_wf) * 0.1818
                 vlr_st_wf = preco_sem_st_wf * st_efetivo_wf
 
-                impostos_unit = vlr_icms_wf + vlr_pis_wf + vlr_cofins_wf + vlr_fot_wf + vlr_st_wf
+                impostos_sem_st = vlr_icms_wf + vlr_pis_wf + vlr_cofins_wf + vlr_fot_wf
 
                 vlr_descarga_wf = preco_sem_st_wf * (pct_f_wf / 100.0)
                 vlr_op_log_wf = preco_sem_st_wf * (pct_fi_wf / 100.0)
@@ -812,13 +809,13 @@ with tab_waterfall:
                 vlr_outros_wf = preco_sem_st_wf * (pct_o_wf / 100.0)
                 despesas_unit = vlr_descarga_wf + vlr_op_log_wf + vlr_comissao_wf + vlr_outros_wf
 
-                lucro_unit_real = preco_sem_st_wf - p_custo_wf - (impostos_unit - vlr_st_wf) - despesas_unit
+                lucro_unit_real = preco_sem_st_wf - p_custo_wf - impostos_sem_st - despesas_unit
                 margem_wf_final = (lucro_unit_real / preco_sem_st_wf) * 100 if preco_sem_st_wf > 0 else 0
 
                 st.markdown("---")
                 k1, k2, k3, k4, k5 = st.columns(5)
-                k1.metric("Preço Unit. Final", f"R$ {preco_base_wf:.2f}")
-                k2.metric("Impostos Unit.", f"R$ {impostos_unit:.2f}")
+                k1.metric("Preço Base (Sem ST)", f"R$ {preco_sem_st_wf:.2f}")
+                k2.metric("Impostos (Sem ST)", f"R$ {impostos_sem_st:.2f}")
                 k3.metric("Despesas Unit.", f"R$ {despesas_unit:.2f}")
                 k4.metric("Lucro Líquido Unit.", f"R$ {lucro_unit_real:.2f}")
 
@@ -829,9 +826,9 @@ with tab_waterfall:
                 else:
                     k5.metric("Margem Real Unit. (%)", f"{margem_wf_final:.2f}%", "Prejuízo ❌", delta_color="inverse")
 
-                eixo_x = ["1. Preço Final", "2. Impostos Totais", "3. Custo Produto", "4. Despesas Comerciais", "5. Lucro Líquido Real"]
-                text_grafico = [f"R$ {preco_base_wf:.2f}", f"-R$ {impostos_unit:.2f}", f"-R$ {p_custo_wf:.2f}", f"-R$ {despesas_unit:.2f}", f"R$ {lucro_unit_real:.2f}"]
-                y_grafico = [preco_base_wf, -impostos_unit, -p_custo_wf, -despesas_unit, lucro_unit_real]
+                eixo_x = ["1. Preço Base (Sem ST)", "2. Impostos (Sem ST)", "3. Custo Produto", "4. Despesas Comerciais", "5. Lucro Líquido Real"]
+                text_grafico = [f"R$ {preco_sem_st_wf:.2f}", f"-R$ {impostos_sem_st:.2f}", f"-R$ {p_custo_wf:.2f}", f"-R$ {despesas_unit:.2f}", f"R$ {lucro_unit_real:.2f}"]
+                y_grafico = [preco_sem_st_wf, -impostos_sem_st, -p_custo_wf, -despesas_unit, lucro_unit_real]
 
                 medidas_grafico = ["relative", "relative", "relative", "relative", "total"]
 
@@ -850,7 +847,7 @@ with tab_waterfall:
                 ))
 
                 fig_waterfall.update_layout(
-                    title=f"Decomposição de Margem Unitária: {p_desc_wf}",
+                    title=f"Decomposição de Margem Unitária (Base Sem ST): {p_desc_wf}",
                     plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
                     height=550, margin=dict(l=20, r=20, t=50, b=20),
                     yaxis=dict(title="Valor em Reais (R$)")
@@ -861,13 +858,14 @@ with tab_waterfall:
                 st.markdown("### 🔍 Detalhamento Financeiro (Por Unidade)")
 
                 linhas_detalhe = [
-                    {"Componente": "Preço Unitário (Final)", "Valor (R$)": preco_base_wf, "Representação (%)": 100.0},
-                    {"Componente": "(-) ICMS", "Valor (R$)": vlr_icms_wf, "Representação (%)": (vlr_icms_wf/preco_base_wf)*100 if preco_base_wf else 0},
-                    {"Componente": "(-) PIS/COFINS", "Valor (R$)": (vlr_pis_wf + vlr_cofins_wf), "Representação (%)": ((vlr_pis_wf + vlr_cofins_wf)/preco_base_wf)*100 if preco_base_wf else 0},
-                    {"Componente": "(-) FOT", "Valor (R$)": vlr_fot_wf, "Representação (%)": (vlr_fot_wf/preco_base_wf)*100 if preco_base_wf else 0},
-                    {"Componente": "(-) ST (Substituição Tributária)", "Valor (R$)": vlr_st_wf, "Representação (%)": (vlr_st_wf/preco_base_wf)*100 if preco_base_wf else 0},
-                    {"Componente": "(=) TRIBUTOS TOTAIS", "Valor (R$)": impostos_unit, "Representação (%)": (impostos_unit/preco_base_wf)*100 if preco_base_wf else 0},
-                    {"Componente": "(-) Custo da Mercadoria (Base)", "Valor (R$)": p_custo_wf, "Representação (%)": (p_custo_wf/preco_base_wf)*100 if preco_base_wf else 0},
+                    {"Componente": "Preço Unitário Tabela (Com ST)", "Valor (R$)": preco_base_wf, "Representação (%)": (preco_base_wf/preco_sem_st_wf)*100 if preco_sem_st_wf else 0},
+                    {"Componente": "(-) ST (Substituição Tributária)", "Valor (R$)": vlr_st_wf, "Representação (%)": (vlr_st_wf/preco_sem_st_wf)*100 if preco_sem_st_wf else 0},
+                    {"Componente": "(=) PREÇO BASE (Sem ST)", "Valor (R$)": preco_sem_st_wf, "Representação (%)": 100.0},
+                    {"Componente": "(-) ICMS", "Valor (R$)": vlr_icms_wf, "Representação (%)": (vlr_icms_wf/preco_sem_st_wf)*100 if preco_sem_st_wf else 0},
+                    {"Componente": "(-) PIS/COFINS", "Valor (R$)": (vlr_pis_wf + vlr_cofins_wf), "Representação (%)": ((vlr_pis_wf + vlr_cofins_wf)/preco_sem_st_wf)*100 if preco_sem_st_wf else 0},
+                    {"Componente": "(-) FOT", "Valor (R$)": vlr_fot_wf, "Representação (%)": (vlr_fot_wf/preco_sem_st_wf)*100 if preco_sem_st_wf else 0},
+                    {"Componente": "(=) TRIBUTOS (Sem ST)", "Valor (R$)": impostos_sem_st, "Representação (%)": (impostos_sem_st/preco_sem_st_wf)*100 if preco_sem_st_wf else 0},
+                    {"Componente": "(-) Custo da Mercadoria (Base)", "Valor (R$)": p_custo_wf, "Representação (%)": (p_custo_wf/preco_sem_st_wf)*100 if preco_sem_st_wf else 0},
                     {"Componente": "(-) Descarga", "Valor (R$)": vlr_descarga_wf, "Representação (%)": pct_f_wf},
                     {"Componente": "(-) Op. Logístico", "Valor (R$)": vlr_op_log_wf, "Representação (%)": pct_fi_wf},
                     {"Componente": "(-) Comissão", "Valor (R$)": vlr_comissao_wf, "Representação (%)": pct_c_wf},
