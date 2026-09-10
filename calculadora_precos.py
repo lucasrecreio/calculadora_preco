@@ -345,7 +345,7 @@ with tab_deal:
 
     # === ABA INTERNA 2: UPLOAD EM LOTE ===
     with tab_lote:
-        st.info("💡 **Dica:** Filtre as Marcas, Nomes e Códigos abaixo para gerar uma Planilha Modelo já pré-preenchida com os produtos. Se deixar os campos de despesas vazios no preenchimento, o sistema usará o padrão (Ex: Op. Logístico 5%).")
+        st.info("💡 **Dica:** Filtre as Marcas, Nomes e Códigos abaixo para gerar uma Planilha Modelo já pré-preenchida com os produtos.")
 
         col_fl1, col_fl2, col_fl3 = st.columns([1, 1, 1])
         with col_fl1:
@@ -404,6 +404,7 @@ with tab_deal:
                 codigos_lista_up = df_upload['CODPROD'].dropna().tolist()
                 codigos_str_up = "'" + "','".join(codigos_lista_up) + "'"
 
+                # Usando DuckDB com a tabela de cadastro
                 query_lote = f"""
                     SELECT 
                         CAST(CODPROD AS VARCHAR) AS CODPROD,
@@ -858,8 +859,8 @@ with tab_waterfall:
                 st.markdown("### 🔍 Detalhamento Financeiro (Por Unidade)")
 
                 linhas_detalhe = [
-                    {"Componente": "Preço Unitário Tabela (Com ST)", "Valor (R$)": preco_base_wf, "Representação (%)": (preco_base_wf/preco_sem_st_wf)*100 if preco_sem_st_wf else 0},
-                    {"Componente": "(-) ST (Substituição Tributária)", "Valor (R$)": vlr_st_wf, "Representação (%)": (vlr_st_wf/preco_sem_st_wf)*100 if preco_sem_st_wf else 0},
+                    {"Componente": "Preço Final (Com ST)", "Valor (R$)": preco_base_wf, "Representação (%)": ""},
+                    {"Componente": "(-) ST (Substituição Tributária)", "Valor (R$)": vlr_st_wf, "Representação (%)": ""},
                     {"Componente": "(=) PREÇO BASE (Sem ST)", "Valor (R$)": preco_sem_st_wf, "Representação (%)": 100.0},
                     {"Componente": "(-) ICMS", "Valor (R$)": vlr_icms_wf, "Representação (%)": (vlr_icms_wf/preco_sem_st_wf)*100 if preco_sem_st_wf else 0},
                     {"Componente": "(-) PIS/COFINS", "Valor (R$)": (vlr_pis_wf + vlr_cofins_wf), "Representação (%)": ((vlr_pis_wf + vlr_cofins_wf)/preco_sem_st_wf)*100 if preco_sem_st_wf else 0},
@@ -879,7 +880,7 @@ with tab_waterfall:
                 st.dataframe(
                     df_detalhe.style.format({
                         "Valor (R$)": "R$ {:,.2f}",
-                        "Representação (%)": "{:.2f}%"
+                        "Representação (%)": lambda x: f"{x:.2f}%" if isinstance(x, (int, float)) and pd.notna(x) else "-"
                     }).apply(lambda x: ['background-color: rgba(255,255,255,0.05); font-weight: bold' if '(=)' in str(v) else '' for v in x], axis=1),
                     use_container_width=True,
                     hide_index=True
