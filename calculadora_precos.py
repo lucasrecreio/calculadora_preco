@@ -19,7 +19,6 @@ st.markdown(
 )
 
 # --- CAMINHOS DOS ARQUIVOS ---
-# Teste local (para a nuvem, você pode mudar para "dados/8125_dados_cadastro_produto.csv" se colocar numa pasta)
 caminho_base = r"8125_dados_cadastro_produto.csv"
 
 # --- FUNÇÕES AUXILIARES ---
@@ -31,7 +30,6 @@ def parse_lista_codigos(texto_input):
 @st.cache_data(show_spinner=False)
 def carregar_base_produtos(caminho):
     try:
-        # Forçamos a leitura do EAN como string para evitar notação científica ou arredondamento
         try:
             df = pd.read_csv(caminho, sep=';', decimal=',', encoding='utf-8', low_memory=False, dtype={'CODPROD': str, 'EAN': str})
             if len(df.columns) == 1: 
@@ -44,12 +42,11 @@ def carregar_base_produtos(caminho):
         if 'CODPROD' in df.columns:
             df['CODPROD'] = df['CODPROD'].astype(str).str.split('.').str[0]
 
-        # BLINDAGEM DO EAN (Mantém estritamente como texto e remove '.0' final)
         if 'EAN' in df.columns:
             df['EAN'] = df['EAN'].astype(str).str.replace(r'\.0$', '', regex=True)
             df['EAN'] = df['EAN'].replace(['nan', 'NaN', 'None', ''], '-')
 
-        # ADICIONADO: PVENDA inserido na lista de colunas numéricas
+        # ADICIONADO: PVENDA para garantir a precisão da Base Sem ST do ERP
         cols_numericas = ['CUSTO_ULT_ENT', 'CUSTO_REAL', 'PERC_ICMS', 'PERCPIS', 'PERCCOFINS', 'PVENDA', 'PVENDAST', 'PERC_ST', 'QTD_CX', 'QTESTDISP']
 
         for col in cols_numericas:
@@ -173,17 +170,16 @@ with tab_deal:
                     p_icms = float(df_prod['PERC_ICMS'].iloc[0] or 0.0)
                     p_pis = float(df_prod['PERCPIS'].iloc[0] or 0.0)
                     p_cofins = float(df_prod['PERCCOFINS'].iloc[0] or 0.0)
+                    p_st = float(df_prod['PERC_ST'].iloc[0] or 0.0)
+                    p_preco_atual = float(df_prod['PVENDAST'].iloc[0] or 0.0)
                     
-                    # CARREGANDO OS DOIS PREÇOS REAIS DO CSV
-                    p_preco_sem_st = float(df_prod['PVENDA'].iloc[0] or 0.0)
-                    p_preco_com_st = float(df_prod['PVENDAST'].iloc[0] or 0.0)
-                    p_perc_st_csv = float(df_prod['PERC_ST'].iloc[0] or 0.0)
+                    # Puxa o preço original direto do CSV para precisão absoluta
+                    p_preco_sem_st_csv = float(df_prod['PVENDA'].iloc[0] or 0.0)
                     
-                    # Cálculo da Taxa Efetiva de ST (Garante que a matemática bata com o ERP)
-                    if p_preco_sem_st > 0 and p_preco_com_st > p_preco_sem_st:
-                        st_efetivo = (p_preco_com_st / p_preco_sem_st) - 1
+                    if p_preco_sem_st_csv > 0 and p_preco_atual > p_preco_sem_st_csv:
+                        st_efetivo = (p_preco_atual / p_preco_sem_st_csv) - 1
                     else:
-                        st_efetivo = p_perc_st_csv / 100.0
+                        st_efetivo = p_st / 100.0
                         
                     p_qtd_cx = int(df_prod['QTD_CX'].iloc[0] or 1)
                     p_estoque = int(df_prod['ESTOQUE_CX'].iloc[0] or 0)
@@ -195,8 +191,8 @@ with tab_deal:
                             <b>Marca:</b> {p_marca} &nbsp;|&nbsp;
                             <b>EAN:</b> {p_ean} &nbsp;|&nbsp;
                             <b>Custo Base (Maior):</b> R$ {p_custo:.2f} &nbsp;|&nbsp; 
-                            <b>Preço ERP (Sem ST):</b> R$ {p_preco_sem_st:.2f} &nbsp;|&nbsp; 
-                            <b>Preço ERP (Com ST):</b> R$ {p_preco_com_st:.2f} <br>
+                            <b>Preço ERP (Com ST):</b> R$ {p_preco_atual:.2f} &nbsp;|&nbsp; 
+                            <b>Preço ERP (Sem ST):</b> R$ {p_preco_sem_st_csv:.2f} <br>
                             <b>Unidades p/ Caixa:</b> {p_qtd_cx} &nbsp;|&nbsp; 
                             <b>Estoque Disp.:</b> {p_estoque} Cx
                         </span>
@@ -219,20 +215,21 @@ with tab_deal:
                     fot_efetivo = ((FOT_BASE - p_icms) * FOT_ALIQ) / 10000.0
                     desp_operacionais_efetivas = (pct_descarga + pct_op_logistico + pct_comissao + pct_outros) / 100.0
 
-                    def calc_resultado(preco_sem_st_teste):
-                        vlr_icms = preco_sem_st_teste * aliq_icms
-                        base_pis_cofins = preco_sem_st_teste - vlr_icms
+                    def calc_resultado(preco_teste_com_st):
+                        preco_sem_st = preco_teste_com_st / (1 + st_efetivo)
+                        vlr_icms = preco_sem_st * aliq_icms
+                        base_pis_cofins = preco_sem_st - vlr_icms
                         vlr_pis = base_pis_cofins * (p_pis / 100.0)
                         vlr_cofins = base_pis_cofins * (p_cofins / 100.0)
-                        vlr_fot = ((preco_sem_st_teste * (FOT_BASE / 100.0)) - vlr_icms) * (FOT_ALIQ / 100.0)
+                        vlr_fot = ((preco_sem_st * (FOT_BASE / 100.0)) - vlr_icms) * (FOT_ALIQ / 100.0)
 
                         impostos_totais_sem_st = vlr_icms + vlr_pis + vlr_cofins + vlr_fot
-                        despesas_rs = preco_sem_st_teste * desp_operacionais_efetivas
+                        despesas_rs = preco_sem_st * desp_operacionais_efetivas
 
                         cmv_total = p_custo + impostos_totais_sem_st + despesas_rs 
 
-                        lucro = preco_sem_st_teste - cmv_total
-                        margem = (lucro / preco_sem_st_teste) * 100.0 if preco_sem_st_teste > 0 else 0
+                        lucro = preco_sem_st - cmv_total
+                        margem = (lucro / preco_sem_st) * 100.0 if preco_sem_st > 0 else 0
                         return lucro, margem
 
                     st.markdown("---")
@@ -246,20 +243,20 @@ with tab_deal:
                         aliq_totais_sem_st = aliq_icms + pis_cofins_efetivo + fot_efetivo + desp_operacionais_efetivas
                         denominador = 1 - (aliq_totais_sem_st + margem_alvo)
 
-                        preco_sugerido_sem_st = 0.0
+                        preco_sugerido = 0.0
                         if denominador > 0 and p_custo > 0:
-                            preco_sugerido_sem_st = p_custo / denominador
-                            st.success(f"Preço Sugerido (Sem ST): **R$ {preco_sugerido_sem_st:.2f}**")
+                            preco_sem_st_alvo = p_custo / denominador
+                            preco_sugerido = preco_sem_st_alvo * (1 + st_efetivo)
+                            st.success(f"Preço Sugerido (Alvo): **R$ {preco_sugerido:.2f}**")
                         else:
                             st.error("Margem inviável com os custos atuais.")
 
                     with col_sim2:
                         st.write("**📝 Modo B: Avaliar Preço Solicitado pelo Vendedor**")
-                        # Agora o input do vendedor é diretamente o Preço SEM ST
-                        preco_negociado_sem_st = st.number_input("Preço Fechado na Negociação (Sem ST) (R$)", value=float(p_preco_sem_st), step=0.50)
+                        preco_negociado = st.number_input("Preço Fechado na Negociação (R$)", value=float(p_preco_atual), step=0.50)
 
-                        if preco_negociado_sem_st > 0:
-                            lucro_rs, margem_real = calc_resultado(preco_negociado_sem_st)
+                        if preco_negociado > 0:
+                            lucro_rs, margem_real = calc_resultado(preco_negociado)
                             if margem_real >= 5.0:
                                 st.info(f"Margem Líquida Parcial: **{margem_real:.2f}%** | Lucro Un.: **R$ {lucro_rs:.2f}**")
                             else:
@@ -269,28 +266,28 @@ with tab_deal:
                     col_qtd, col_btn1, col_btn2, col_btn3 = st.columns([1.5, 1.5, 1.5, 1.5])
                     qtd_caixas = col_qtd.number_input("Quantidade de Caixas", min_value=1, value=10, step=1)
 
-                    def add_carrinho(preco_sem_st_aplicado, tipo_preco):
-                        preco_com_st_aplicado = preco_sem_st_aplicado * (1 + st_efetivo)
-                        
-                        vlr_icms = preco_sem_st_aplicado * aliq_icms
-                        base_pis_cofins = preco_sem_st_aplicado - vlr_icms
+                    def add_carrinho(preco_aplicado, tipo_preco):
+                        preco_sem_st = preco_aplicado / (1 + st_efetivo)
+                        vlr_icms = preco_sem_st * aliq_icms
+                        base_pis_cofins = preco_sem_st - vlr_icms
                         vlr_pis = base_pis_cofins * (p_pis / 100.0)
                         vlr_cofins = base_pis_cofins * (p_cofins / 100.0)
-                        vlr_fot = ((preco_sem_st_aplicado * (FOT_BASE / 100.0)) - vlr_icms) * (FOT_ALIQ / 100.0)
-                        vlr_st = preco_sem_st_aplicado * st_efetivo
+                        vlr_fot = ((preco_sem_st * (FOT_BASE / 100.0)) - vlr_icms) * (FOT_ALIQ / 100.0)
+                        vlr_st = preco_sem_st * st_efetivo
 
                         impostos_totais_sem_st = vlr_icms + vlr_pis + vlr_cofins + vlr_fot
 
-                        vlr_descarga = preco_sem_st_aplicado * (pct_descarga / 100.0)
-                        vlr_op_log = preco_sem_st_aplicado * (pct_op_logistico / 100.0)
-                        vlr_comissao = preco_sem_st_aplicado * (pct_comissao / 100.0)
-                        vlr_outros = preco_sem_st_aplicado * (pct_outros / 100.0)
+                        vlr_descarga = preco_sem_st * (pct_descarga / 100.0)
+                        vlr_op_log = preco_sem_st * (pct_op_logistico / 100.0)
+                        vlr_comissao = preco_sem_st * (pct_comissao / 100.0)
+                        vlr_outros = preco_sem_st * (pct_outros / 100.0)
                         despesas_rs = vlr_descarga + vlr_op_log + vlr_comissao + vlr_outros
 
-                        lucro_un, margem_un = calc_resultado(preco_sem_st_aplicado)
+                        lucro_un, margem_un = calc_resultado(preco_aplicado)
                         total_unidades = qtd_caixas * p_qtd_cx
 
                         custo_aquisicao = p_custo * total_unidades
+
                         cmv_total = custo_aquisicao + (impostos_totais_sem_st * total_unidades) + (despesas_rs * total_unidades)
 
                         novo_item = {
@@ -302,9 +299,9 @@ with tab_deal:
                             "Caixas": qtd_caixas,
                             "Unid/CX": p_qtd_cx,
                             "Total Unid": total_unidades,
-                            "Preço Unit. (Com ST)": preco_com_st_aplicado,
-                            "Preço Sem ST": preco_sem_st_aplicado,
-                            "Faturamento Total": preco_com_st_aplicado * total_unidades,
+                            "Preço Unit.": preco_aplicado,
+                            "Preço Sem ST": preco_sem_st,
+                            "Faturamento Total": preco_aplicado * total_unidades,
                             "Custo de Aquisição": custo_aquisicao,
                             "ICMS": vlr_icms * total_unidades,
                             "PIS/COFINS": (vlr_pis + vlr_cofins) * total_unidades,
@@ -333,16 +330,16 @@ with tab_deal:
 
                     with col_btn1:
                         st.write("") ; st.write("")
-                        if st.button("➕ Adicionar Preço Sugerido", help=f"Adicionar por R$ {preco_sugerido_sem_st:.2f} (Sem ST)") and preco_sugerido_sem_st > 0:
-                            add_carrinho(preco_sugerido_sem_st, "Sugerido")
+                        if st.button("➕ Adicionar Preço Sugerido", help=f"Adicionar por R$ {preco_sugerido:.2f}") and preco_sugerido > 0:
+                            add_carrinho(preco_sugerido, "Sugerido")
                     with col_btn2:
                         st.write("") ; st.write("")
-                        if st.button("➕ Adicionar Preço Negociado", help=f"Adicionar por R$ {preco_negociado_sem_st:.2f} (Sem ST)"):
-                            add_carrinho(preco_negociado_sem_st, "Negociado")
+                        if st.button("➕ Adicionar Preço Negociado", help=f"Adicionar por R$ {preco_negociado:.2f}"):
+                            add_carrinho(preco_negociado, "Negociado")
                     with col_btn3:
                         st.write("") ; st.write("")
-                        if st.button("➕ Adicionar Preço Tabela", help=f"Adicionar por R$ {p_preco_sem_st:.2f} (Sem ST)"):
-                            add_carrinho(p_preco_sem_st, "Atual")
+                        if st.button("➕ Adicionar Preço Tabela", help=f"Adicionar por R$ {p_preco_atual:.2f}"):
+                            add_carrinho(p_preco_atual, "Atual")
 
                 else:
                     st.warning("Produto não encontrado na base.")
@@ -386,7 +383,7 @@ with tab_deal:
             df_produtos_modelo = df_modelo_base[['CODPROD', 'PRODUTO', 'MARCA', 'EAN', 'QTESTDISP']].rename(columns={'QTESTDISP': 'ESTOQUE_CX'}).copy()
 
             df_produtos_modelo['QTD_CAIXAS'] = None
-            df_produtos_modelo['PRECO_NEGOCIADO_SEM_ST'] = None
+            df_produtos_modelo['PRECO_NEGOCIADO'] = None
             df_produtos_modelo['MARGEM_ALVO_PCT'] = None
             df_produtos_modelo['DESCARGA_PCT'] = None
             df_produtos_modelo['OP_LOGISTICO_PCT'] = None
@@ -450,15 +447,15 @@ with tab_deal:
                                 p_icms = float(row_db['PERC_ICMS'].iloc[0] or 0.0)
                                 p_pis = float(row_db['PERCPIS'].iloc[0] or 0.0)
                                 p_cofins = float(row_db['PERCCOFINS'].iloc[0] or 0.0)
+                                p_st = float(row_db['PERC_ST'].iloc[0] or 0.0)
                                 
-                                p_preco_sem_st = float(row_db['PVENDA'].iloc[0] or 0.0)
-                                p_preco_com_st = float(row_db['PVENDAST'].iloc[0] or 0.0)
-                                p_perc_st_csv = float(row_db['PERC_ST'].iloc[0] or 0.0)
+                                p_preco_sem_st_csv = float(row_db['PVENDA'].iloc[0] or 0.0)
+                                p_preco_atual = float(row_db['PVENDAST'].iloc[0] or 0.0)
                                 
-                                if p_preco_sem_st > 0 and p_preco_com_st > p_preco_sem_st:
-                                    st_efetivo = (p_preco_com_st / p_preco_sem_st) - 1
+                                if p_preco_sem_st_csv > 0 and p_preco_atual > p_preco_sem_st_csv:
+                                    st_efetivo = (p_preco_atual / p_preco_sem_st_csv) - 1
                                 else:
-                                    st_efetivo = p_perc_st_csv / 100.0
+                                    st_efetivo = p_st / 100.0
                                 
                                 p_qtd_cx = int(row_db['QTD_CX'].iloc[0] or 1)
                                 p_estoque = int(row_db['ESTOQUE_CX'].iloc[0] or 0)
@@ -475,7 +472,7 @@ with tab_deal:
                                     continue
 
                                 margem_alvo_lote = row.get('MARGEM_ALVO_PCT', None)
-                                preco_negociado_lote = row.get('PRECO_NEGOCIADO_SEM_ST', None)
+                                preco_negociado_lote = row.get('PRECO_NEGOCIADO', None)
 
                                 pct_descarga_lote = float(row.get('DESCARGA_PCT', 0.0) if pd.notna(row.get('DESCARGA_PCT')) else 0.0)
                                 pct_op_logistico_lote = float(row.get('OP_LOGISTICO_PCT', 5.0) if pd.notna(row.get('OP_LOGISTICO_PCT')) else 5.0)
@@ -490,43 +487,43 @@ with tab_deal:
 
                                 aliq_totais_sem_st = aliq_icms + pis_cofins_efetivo + fot_efetivo + desp_operacionais_efetivas
 
-                                preco_sem_st_aplicado = 0.0
+                                preco_final_aplicado = 0.0
                                 tipo_preco_aplicado = ""
 
                                 if pd.notna(margem_alvo_lote) and margem_alvo_lote > 0:
                                     denominador = 1 - (aliq_totais_sem_st + (margem_alvo_lote/100.0))
                                     if denominador > 0 and p_custo > 0:
-                                        preco_sem_st_aplicado = p_custo / denominador
+                                        preco_sem_st_alvo = p_custo / denominador
+                                        preco_final_aplicado = preco_sem_st_alvo * (1 + st_efetivo)
                                         tipo_preco_aplicado = "Sugerido (Lote)"
 
-                                if preco_sem_st_aplicado == 0.0 and pd.notna(preco_negociado_lote) and preco_negociado_lote > 0:
-                                    preco_sem_st_aplicado = float(preco_negociado_lote)
+                                if preco_final_aplicado == 0.0 and pd.notna(preco_negociado_lote) and preco_negociado_lote > 0:
+                                    preco_final_aplicado = float(preco_negociado_lote)
                                     tipo_preco_aplicado = "Negociado (Lote)"
 
-                                if preco_sem_st_aplicado == 0.0:
-                                    preco_sem_st_aplicado = p_preco_sem_st
+                                if preco_final_aplicado == 0.0:
+                                    preco_final_aplicado = p_preco_atual
                                     tipo_preco_aplicado = "Atual (Lote)"
 
-                                preco_com_st_aplicado = preco_sem_st_aplicado * (1 + st_efetivo)
-                                
-                                vlr_icms = preco_sem_st_aplicado * aliq_icms
-                                base_pis_cofins = preco_sem_st_aplicado - vlr_icms
+                                preco_sem_st = preco_final_aplicado / (1 + st_efetivo)
+                                vlr_icms = preco_sem_st * aliq_icms
+                                base_pis_cofins = preco_sem_st - vlr_icms
                                 vlr_pis = base_pis_cofins * (p_pis / 100.0)
                                 vlr_cofins = base_pis_cofins * (p_cofins / 100.0)
-                                vlr_fot = ((preco_sem_st_aplicado * (FOT_BASE / 100.0)) - vlr_icms) * (FOT_ALIQ / 100.0)
-                                vlr_st = preco_sem_st_aplicado * st_efetivo
+                                vlr_fot = ((preco_sem_st * (FOT_BASE / 100.0)) - vlr_icms) * (FOT_ALIQ / 100.0)
+                                vlr_st = preco_sem_st * st_efetivo
 
                                 impostos_totais_sem_st = vlr_icms + vlr_pis + vlr_cofins + vlr_fot
 
-                                vlr_descarga = preco_sem_st_aplicado * (pct_descarga_lote / 100.0)
-                                vlr_op_log = preco_sem_st_aplicado * (pct_op_logistico_lote / 100.0)
-                                vlr_comissao = preco_sem_st_aplicado * (pct_comissao_lote / 100.0)
-                                vlr_outros = preco_sem_st_aplicado * (pct_outros_lote / 100.0)
+                                vlr_descarga = preco_sem_st * (pct_descarga_lote / 100.0)
+                                vlr_op_log = preco_sem_st * (pct_op_logistico_lote / 100.0)
+                                vlr_comissao = preco_sem_st * (pct_comissao_lote / 100.0)
+                                vlr_outros = preco_sem_st * (pct_outros_lote / 100.0)
                                 despesas_rs = vlr_descarga + vlr_op_log + vlr_comissao + vlr_outros
 
                                 cmv_unit = p_custo + impostos_totais_sem_st + despesas_rs
-                                lucro_un = preco_sem_st_aplicado - cmv_unit
-                                margem_un = (lucro_un / preco_sem_st_aplicado) * 100.0 if preco_sem_st_aplicado > 0 else 0
+                                lucro_un = preco_sem_st - cmv_unit
+                                margem_un = (lucro_un / preco_sem_st) * 100.0 if preco_sem_st > 0 else 0
 
                                 total_unidades = qtd_caixas * p_qtd_cx
                                 custo_aquisicao = p_custo * total_unidades
@@ -536,11 +533,9 @@ with tab_deal:
                                     "Código": cod, "Produto": p_desc, "Marca": p_marca, "EAN": p_ean,
                                     "Estoque (Cx)": p_estoque,
                                     "Caixas": qtd_caixas, "Unid/CX": p_qtd_cx,
-                                    "Total Unid": total_unidades, 
-                                    "Preço Unit. (Com ST)": preco_com_st_aplicado,
-                                    "Preço Sem ST": preco_sem_st_aplicado,
-                                    "Faturamento Total": preco_com_st_aplicado * total_unidades, 
-                                    "Custo de Aquisição": custo_aquisicao,
+                                    "Total Unid": total_unidades, "Preço Unit.": preco_final_aplicado,
+                                    "Preço Sem ST": preco_sem_st,
+                                    "Faturamento Total": preco_final_aplicado * total_unidades, "Custo de Aquisição": custo_aquisicao,
                                     "ICMS": vlr_icms * total_unidades, "PIS/COFINS": (vlr_pis + vlr_cofins) * total_unidades,
                                     "FOT": vlr_fot * total_unidades, "ST": vlr_st * total_unidades,
                                     "Descarga": vlr_descarga * total_unidades, "Op. Logístico": vlr_op_log * total_unidades,
@@ -594,8 +589,8 @@ with tab_deal:
             cr4.metric("Margem Ponderada Target", f"{margem_ponderada:.2f}%", "Abaixo do Alvo ❌", delta_color="inverse")
 
         st.dataframe(
-            df_carrinho[['Código', 'Produto', 'Marca', 'EAN', 'Estoque (Cx)', 'Caixas', 'Preço Unit. (Com ST)', 'Preço Sem ST', 'Faturamento Total', 'Custo Total (CMV + Desp)', 'Lucro Líquido', 'Margem %']].style.format({
-                "Preço Unit. (Com ST)": "R$ {:,.2f}",
+            df_carrinho[['Código', 'Produto', 'Marca', 'EAN', 'Estoque (Cx)', 'Caixas', 'Preço Unit.', 'Preço Sem ST', 'Faturamento Total', 'Custo Total (CMV + Desp)', 'Lucro Líquido', 'Margem %']].style.format({
+                "Preço Unit.": "R$ {:,.2f}",
                 "Preço Sem ST": "R$ {:,.2f}",
                 "Faturamento Total": "R$ {:,.2f}",
                 "Custo Total (CMV + Desp)": "R$ {:,.2f}",
@@ -618,7 +613,7 @@ with tab_deal:
             'Caixas': df_carrinho['Caixas'].sum(),
             'Unid/CX': '-',
             'Total Unid': df_carrinho['Total Unid'].sum(),
-            'Preço Unit. (Com ST)': '-',
+            'Preço Unit.': '-',
             'Preço Sem ST': '-',
             'Faturamento Total': fat_total,
             'Custo de Aquisição': df_carrinho['Custo de Aquisição'].sum(),
@@ -640,7 +635,7 @@ with tab_deal:
         df_detalhado = pd.concat([df_carrinho_export, totais], ignore_index=True)
 
         cols_order = [
-            'Código', 'Produto', 'Marca', 'EAN', 'Estoque (Cx)', 'Caixas', 'Unid/CX', 'Total Unid', 'Preço Unit. (Com ST)', 'Preço Sem ST', 
+            'Código', 'Produto', 'Marca', 'EAN', 'Estoque (Cx)', 'Caixas', 'Unid/CX', 'Total Unid', 'Preço Unit.', 'Preço Sem ST', 
             'Faturamento Total', 'Custo de Aquisição', 'ICMS', 'PIS/COFINS', 'FOT', 'ST', 
             'Descarga', 'Op. Logístico', 'Comissão', 'Outros', 'Custo Total (CMV + Desp)', 
             'VPC Global', 'Lucro Líquido', 'Margem %', 'Tipo Preço'
@@ -648,7 +643,7 @@ with tab_deal:
         df_detalhado = df_detalhado[cols_order]
 
         # O cliente NÃO VÊ a coluna de Estoque
-        df_cliente = df_detalhado[['Código', 'Produto', 'Marca', 'EAN', 'Caixas', 'Unid/CX', 'Total Unid', 'Preço Unit. (Com ST)', 'Preço Sem ST', 'Faturamento Total']].copy()
+        df_cliente = df_detalhado[['Código', 'Produto', 'Marca', 'EAN', 'Caixas', 'Unid/CX', 'Total Unid', 'Preço Unit.', 'Preço Sem ST', 'Faturamento Total']].copy()
 
         def formatar_excel(df_alvo, nome_planilha):
             buffer = io.BytesIO()
@@ -749,16 +744,16 @@ with tab_waterfall:
                 p_icms_wf = float(df_prod_wf['PERC_ICMS'].iloc[0] or 0.0)
                 p_pis_wf = float(df_prod_wf['PERCPIS'].iloc[0] or 0.0)
                 p_cofins_wf = float(df_prod_wf['PERCCOFINS'].iloc[0] or 0.0)
+                p_st_wf = float(df_prod_wf['PERC_ST'].iloc[0] or 0.0)
                 
-                p_preco_sem_st_wf = float(df_prod_wf['PVENDA'].iloc[0] or 0.0)
+                p_preco_sem_st_csv = float(df_prod_wf['PVENDA'].iloc[0] or 0.0)
                 p_preco_atual_wf = float(df_prod_wf['PVENDAST'].iloc[0] or 0.0)
-                p_perc_st_csv = float(df_prod_wf['PERC_ST'].iloc[0] or 0.0)
                 
-                if p_preco_sem_st_wf > 0 and p_preco_atual_wf > p_preco_sem_st_wf:
-                    st_efetivo_wf = (p_preco_atual_wf / p_preco_sem_st_wf) - 1
+                if p_preco_sem_st_csv > 0 and p_preco_atual_wf > p_preco_sem_st_csv:
+                    st_efetivo_wf = (p_preco_atual_wf / p_preco_sem_st_csv) - 1
                 else:
-                    st_efetivo_wf = p_perc_st_csv / 100.0
-                    
+                    st_efetivo_wf = p_st_wf / 100.0
+                
                 p_estoque_wf = int(df_prod_wf['ESTOQUE_CX'].iloc[0] or 0)
 
                 st.markdown(f"""
@@ -767,7 +762,7 @@ with tab_waterfall:
                     <span style="font-size: 14px;">
                         <b>Custo Unitário Base (Maior):</b> R$ {p_custo_wf:.2f} &nbsp;|&nbsp; 
                         <b>Preço Unit. Tabela (Com ST):</b> R$ {p_preco_atual_wf:.2f} &nbsp;|&nbsp; 
-                        <b>Preço Unit. Tabela (Sem ST):</b> R$ {p_preco_sem_st_wf:.2f} &nbsp;|&nbsp;
+                        <b>Preço Unit. Tabela (Sem ST):</b> R$ {p_preco_sem_st_csv:.2f} &nbsp;|&nbsp;
                         <b>Estoque Disp.:</b> {p_estoque_wf} Cx
                     </span>
                 </div>
@@ -784,11 +779,11 @@ with tab_waterfall:
 
                     if cenario == "🎯 Margem Alvo (Sugerido)":
                         alvo_wf = st.number_input("Margem Líquida Alvo (%)", value=5.0, step=0.5, key="alvo_wf") / 100.0
-                        preco_sem_st_base_wf = 0.0 
+                        preco_base_wf = 0.0 
                     elif cenario == "🤝 Preço Negociado (Fixo)":
-                        preco_sem_st_base_wf = st.number_input("Preço Fechado Sem ST (R$)", value=p_preco_sem_st_wf, step=0.5, key="preco_fixo_wf")
+                        preco_base_wf = st.number_input("Preço Fechado na Negociação (R$)", value=p_preco_atual_wf, step=0.5, key="preco_fixo_wf")
                     else:
-                        preco_sem_st_base_wf = p_preco_sem_st_wf
+                        preco_base_wf = p_preco_atual_wf
 
                 with st.expander("⚙️ Ajustar Despesas Operacionais (%)", expanded=False):
                     cd_w1, cd_w2, cd_w3, cd_w4 = st.columns(4)
@@ -806,34 +801,39 @@ with tab_waterfall:
                 if cenario == "🎯 Margem Alvo (Sugerido)":
                     denominador_wf = 1 - (aliq_icms_wf + pis_cofins_efetivo_wf + fot_efetivo_wf + desp_op_wf + alvo_wf)
                     if denominador_wf > 0 and p_custo_wf > 0:
-                        preco_sem_st_base_wf = p_custo_wf / denominador_wf
+                        preco_sem_st_wf = p_custo_wf / denominador_wf
+                        preco_base_wf = preco_sem_st_wf * (1 + st_efetivo_wf)
                     else:
                         st.error("Custos ultrapassam o preço. Margem inviável.")
-                        preco_sem_st_base_wf = p_preco_sem_st_wf
+                        preco_base_wf = p_preco_atual_wf
+                        preco_sem_st_wf = p_preco_sem_st_csv
+                elif cenario == "🤝 Preço Negociado (Fixo)":
+                    preco_sem_st_wf = preco_base_wf / (1 + st_efetivo_wf)
+                else:
+                    preco_base_wf = p_preco_atual_wf
+                    preco_sem_st_wf = p_preco_sem_st_csv
 
-                preco_com_st_final = preco_sem_st_base_wf * (1 + st_efetivo_wf)
-
-                vlr_icms_wf = preco_sem_st_base_wf * aliq_icms_wf
-                base_pis_cofins_wf = preco_sem_st_base_wf - vlr_icms_wf
+                vlr_icms_wf = preco_sem_st_wf * aliq_icms_wf
+                base_pis_cofins_wf = preco_sem_st_wf - vlr_icms_wf
                 vlr_pis_wf = base_pis_cofins_wf * (p_pis_wf / 100.0)
                 vlr_cofins_wf = base_pis_cofins_wf * (p_cofins_wf / 100.0)
-                vlr_fot_wf = ((preco_sem_st_base_wf * 0.22) - vlr_icms_wf) * 0.1818
-                vlr_st_wf = preco_sem_st_base_wf * st_efetivo_wf
+                vlr_fot_wf = ((preco_sem_st_wf * 0.22) - vlr_icms_wf) * 0.1818
+                vlr_st_wf = preco_sem_st_wf * st_efetivo_wf
 
                 impostos_sem_st = vlr_icms_wf + vlr_pis_wf + vlr_cofins_wf + vlr_fot_wf
 
-                vlr_descarga_wf = preco_sem_st_base_wf * (pct_f_wf / 100.0)
-                vlr_op_log_wf = preco_sem_st_base_wf * (pct_fi_wf / 100.0)
-                vlr_comissao_wf = preco_sem_st_base_wf * (pct_c_wf / 100.0)
-                vlr_outros_wf = preco_sem_st_base_wf * (pct_o_wf / 100.0)
+                vlr_descarga_wf = preco_sem_st_wf * (pct_f_wf / 100.0)
+                vlr_op_log_wf = preco_sem_st_wf * (pct_fi_wf / 100.0)
+                vlr_comissao_wf = preco_sem_st_wf * (pct_c_wf / 100.0)
+                vlr_outros_wf = preco_sem_st_wf * (pct_o_wf / 100.0)
                 despesas_unit = vlr_descarga_wf + vlr_op_log_wf + vlr_comissao_wf + vlr_outros_wf
 
-                lucro_unit_real = preco_sem_st_base_wf - p_custo_wf - impostos_sem_st - despesas_unit
-                margem_wf_final = (lucro_unit_real / preco_sem_st_base_wf) * 100 if preco_sem_st_base_wf > 0 else 0
+                lucro_unit_real = preco_sem_st_wf - p_custo_wf - impostos_sem_st - despesas_unit
+                margem_wf_final = (lucro_unit_real / preco_sem_st_wf) * 100 if preco_sem_st_wf > 0 else 0
 
                 st.markdown("---")
                 k1, k2, k3, k4, k5 = st.columns(5)
-                k1.metric("Preço Base (Sem ST)", f"R$ {preco_sem_st_base_wf:.2f}")
+                k1.metric("Preço Base (Sem ST)", f"R$ {preco_sem_st_wf:.2f}")
                 k2.metric("Impostos (Sem ST)", f"R$ {impostos_sem_st:.2f}")
                 k3.metric("Despesas Unit.", f"R$ {despesas_unit:.2f}")
                 k4.metric("Lucro Líquido Unit.", f"R$ {lucro_unit_real:.2f}")
@@ -846,8 +846,8 @@ with tab_waterfall:
                     k5.metric("Margem Real Unit. (%)", f"{margem_wf_final:.2f}%", "Prejuízo ❌", delta_color="inverse")
 
                 eixo_x = ["1. Preço Base (Sem ST)", "2. Impostos (Sem ST)", "3. Custo Produto", "4. Despesas Comerciais", "5. Lucro Líquido Real"]
-                text_grafico = [f"R$ {preco_sem_st_base_wf:.2f}", f"-R$ {impostos_sem_st:.2f}", f"-R$ {p_custo_wf:.2f}", f"-R$ {despesas_unit:.2f}", f"R$ {lucro_unit_real:.2f}"]
-                y_grafico = [preco_sem_st_base_wf, -impostos_sem_st, -p_custo_wf, -despesas_unit, lucro_unit_real]
+                text_grafico = [f"R$ {preco_sem_st_wf:.2f}", f"-R$ {impostos_sem_st:.2f}", f"-R$ {p_custo_wf:.2f}", f"-R$ {despesas_unit:.2f}", f"R$ {lucro_unit_real:.2f}"]
+                y_grafico = [preco_sem_st_wf, -impostos_sem_st, -p_custo_wf, -despesas_unit, lucro_unit_real]
 
                 medidas_grafico = ["relative", "relative", "relative", "relative", "total"]
 
@@ -877,14 +877,14 @@ with tab_waterfall:
                 st.markdown("### 🔍 Detalhamento Financeiro (Por Unidade)")
 
                 linhas_detalhe = [
-                    {"Componente": "Preço Final Tabela (Com ST)", "Valor (R$)": preco_com_st_final, "Representação (%)": "-"},
-                    {"Componente": "(-) ST (Substituição Tributária)", "Valor (R$)": vlr_st_wf, "Representação (%)": "-"},
-                    {"Componente": "(=) PREÇO BASE (Sem ST)", "Valor (R$)": preco_sem_st_base_wf, "Representação (%)": 100.0},
-                    {"Componente": "(-) ICMS", "Valor (R$)": vlr_icms_wf, "Representação (%)": (vlr_icms_wf/preco_sem_st_base_wf)*100 if preco_sem_st_base_wf else 0},
-                    {"Componente": "(-) PIS/COFINS", "Valor (R$)": (vlr_pis_wf + vlr_cofins_wf), "Representação (%)": ((vlr_pis_wf + vlr_cofins_wf)/preco_sem_st_base_wf)*100 if preco_sem_st_base_wf else 0},
-                    {"Componente": "(-) FOT", "Valor (R$)": vlr_fot_wf, "Representação (%)": (vlr_fot_wf/preco_sem_st_base_wf)*100 if preco_sem_st_base_wf else 0},
-                    {"Componente": "(=) TRIBUTOS (Sem ST)", "Valor (R$)": impostos_sem_st, "Representação (%)": (impostos_sem_st/preco_sem_st_base_wf)*100 if preco_sem_st_base_wf else 0},
-                    {"Componente": "(-) Custo da Mercadoria (Base)", "Valor (R$)": p_custo_wf, "Representação (%)": (p_custo_wf/preco_sem_st_base_wf)*100 if preco_sem_st_base_wf else 0},
+                    {"Componente": "Preço Final Tabela (Com ST)", "Valor (R$)": preco_base_wf, "Representação (%)": (preco_base_wf/preco_sem_st_wf)*100 if preco_sem_st_wf else 0},
+                    {"Componente": "(-) ST (Substituição Tributária)", "Valor (R$)": vlr_st_wf, "Representação (%)": (vlr_st_wf/preco_sem_st_wf)*100 if preco_sem_st_wf else 0},
+                    {"Componente": "(=) PREÇO BASE (Sem ST)", "Valor (R$)": preco_sem_st_wf, "Representação (%)": 100.0},
+                    {"Componente": "(-) ICMS", "Valor (R$)": vlr_icms_wf, "Representação (%)": (vlr_icms_wf/preco_sem_st_wf)*100 if preco_sem_st_wf else 0},
+                    {"Componente": "(-) PIS/COFINS", "Valor (R$)": (vlr_pis_wf + vlr_cofins_wf), "Representação (%)": ((vlr_pis_wf + vlr_cofins_wf)/preco_sem_st_wf)*100 if preco_sem_st_wf else 0},
+                    {"Componente": "(-) FOT", "Valor (R$)": vlr_fot_wf, "Representação (%)": (vlr_fot_wf/preco_sem_st_wf)*100 if preco_sem_st_wf else 0},
+                    {"Componente": "(=) TRIBUTOS (Sem ST)", "Valor (R$)": impostos_sem_st, "Representação (%)": (impostos_sem_st/preco_sem_st_wf)*100 if preco_sem_st_wf else 0},
+                    {"Componente": "(-) Custo da Mercadoria (Base)", "Valor (R$)": p_custo_wf, "Representação (%)": (p_custo_wf/preco_sem_st_wf)*100 if preco_sem_st_wf else 0},
                     {"Componente": "(-) Descarga", "Valor (R$)": vlr_descarga_wf, "Representação (%)": pct_f_wf},
                     {"Componente": "(-) Op. Logístico", "Valor (R$)": vlr_op_log_wf, "Representação (%)": pct_fi_wf},
                     {"Componente": "(-) Comissão", "Valor (R$)": vlr_comissao_wf, "Representação (%)": pct_c_wf},
