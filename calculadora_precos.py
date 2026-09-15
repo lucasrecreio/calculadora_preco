@@ -19,7 +19,6 @@ st.markdown(
 )
 
 # --- CAMINHOS DOS ARQUIVOS ---
-# Teste local (para a nuvem, você pode mudar para "dados/8125_dados_cadastro_produto.csv" se colocar numa pasta)
 caminho_base = r"8125_dados_cadastro_produto.csv"
 
 # --- FUNÇÕES AUXILIARES ---
