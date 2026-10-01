@@ -6,7 +6,7 @@ import io
 import duckdb
 import re
 import os
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Recreio Rio | Simulador de Negociação", layout="wide", page_icon="📊")
@@ -33,8 +33,13 @@ def obter_status_atualizacao(caminho):
     try:
         if os.path.exists(caminho):
             mtime = os.path.getmtime(caminho)
-            dt_mod = datetime.fromtimestamp(mtime)
-            agora = datetime.now()
+            
+            # Fuso horário do Brasil (UTC-3)
+            fuso_br = timezone(timedelta(hours=-3))
+            
+            # Lê a hora original e converte cravado para o horário de Brasília
+            dt_mod = datetime.fromtimestamp(mtime, tz=timezone.utc).astimezone(fuso_br)
+            agora = datetime.now(fuso_br)
             
             diff_dias = (agora.date() - dt_mod.date()).days
             
@@ -206,6 +211,7 @@ with tab_deal:
                     p_marca = df_prod['MARCA'].iloc[0]
                     p_ean = df_prod['EAN'].iloc[0]
                     
+                    # LOGICA CONSERVADORA: Maior valor entre Ultima Entrada e Real
                     c_ult = float(df_prod['CUSTO_ULT_ENT'].iloc[0] or 0.0)
                     c_real = float(df_prod['CUSTO_REAL'].iloc[0] or 0.0)
                     p_custo = max(c_ult, c_real)
@@ -216,6 +222,7 @@ with tab_deal:
                     p_st = float(df_prod['PERC_ST'].iloc[0] or 0.0)
                     p_preco_atual = float(df_prod['PVENDAST'].iloc[0] or 0.0)
                     
+                    # Puxa o preço original direto do CSV para precisão absoluta
                     p_preco_sem_st_csv = float(df_prod['PVENDA'].iloc[0] or 0.0)
                     
                     if p_preco_sem_st_csv > 0 and p_preco_atual > p_preco_sem_st_csv:
@@ -285,11 +292,11 @@ with tab_deal:
                         aliq_totais_sem_st = aliq_icms + pis_cofins_efetivo + fot_efetivo + desp_operacionais_efetivas
                         denominador = 1 - (aliq_totais_sem_st + margem_alvo)
 
-                        preco_sugerido_sem_st = 0.0
+                        preco_sugerido = 0.0
                         if denominador > 0 and p_custo > 0:
-                            preco_sugerido_sem_st = p_custo / denominador
-                            preco_sugerido_com_st = preco_sugerido_sem_st * (1 + st_efetivo)
-                            st.success(f"Preço Sugerido (Alvo): **R$ {preco_sugerido_com_st:.2f}**")
+                            preco_sem_st_alvo = p_custo / denominador
+                            preco_sugerido = preco_sem_st_alvo * (1 + st_efetivo)
+                            st.success(f"Preço Sugerido (Alvo): **R$ {preco_sugerido:.2f}**")
                         else:
                             st.error("Margem inviável com os custos atuais.")
 
@@ -372,15 +379,15 @@ with tab_deal:
 
                     with col_btn1:
                         st.write("") ; st.write("")
-                        if st.button("➕ Adicionar Preço Sugerido", help=f"Adicionar por R$ {preco_sugerido_com_st:.2f} (Com ST)") if 'preco_sugerido_com_st' in locals() and preco_sugerido_com_st > 0 else False:
-                            add_carrinho(preco_sugerido_com_st, "Sugerido")
+                        if st.button("➕ Adicionar Preço Sugerido", help=f"Adicionar por R$ {preco_sugerido:.2f}") and preco_sugerido > 0:
+                            add_carrinho(preco_sugerido, "Sugerido")
                     with col_btn2:
                         st.write("") ; st.write("")
-                        if st.button("➕ Adicionar Preço Negociado", help=f"Adicionar por R$ {preco_negociado:.2f} (Com ST)"):
+                        if st.button("➕ Adicionar Preço Negociado", help=f"Adicionar por R$ {preco_negociado:.2f}"):
                             add_carrinho(preco_negociado, "Negociado")
                     with col_btn3:
                         st.write("") ; st.write("")
-                        if st.button("➕ Adicionar Preço Tabela", help=f"Adicionar por R$ {p_preco_atual:.2f} (Com ST)"):
+                        if st.button("➕ Adicionar Preço Tabela", help=f"Adicionar por R$ {p_preco_atual:.2f}"):
                             add_carrinho(p_preco_atual, "Atual")
 
                 else:
